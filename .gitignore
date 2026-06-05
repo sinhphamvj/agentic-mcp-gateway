@@ -50,3 +50,7 @@ worktrees/
 # Agent instructions
 AGENTS.md
 CODEX_PROJECT_PLAN.md
+
+# Docs and checklists
+docs/promotion-checklist.md
+docs/announcements/
