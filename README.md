@@ -1,11 +1,33 @@
-# agentic-mcp-gateway
-<!-- Topics: agentic-ai, mcp, langgraph, llm, openai, tool-calling, agent-framework, multi-agent -->
-[![CI](https://github.com/sinh/agentic-mcp-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/sinh/agentic-mcp-gateway/actions)
-[![PyPI](https://img.shields.io/pypi/v/agentic-mcp-gateway)](https://pypi.org/project/agentic-mcp-gateway/)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Stars](https://img.shields.io/github/stars/sinh/agentic-mcp-gateway?style=social)](https://github.com/sinh/agentic-mcp-gateway)
+<p align="center">
+  <img src="assets/banner.png" alt="agentic-mcp-gateway Banner" width="100%">
+</p>
 
-Connect any LLM to any MCP server through one gateway
+<p align="center">
+  <img src="assets/logo.png" alt="agentic-mcp-gateway Logo" width="160">
+</p>
+
+<h1 align="center">agentic-mcp-gateway</h1>
+
+<p align="center">
+  <strong>Connect any LLM to any MCP server through a single LangGraph-powered gateway</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/sinhphamvj/agentic-mcp-gateway/actions"><img src="https://github.com/sinhphamvj/agentic-mcp-gateway/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://pypi.org/project/agentic-mcp-gateway/"><img src="https://img.shields.io/pypi/v/agentic-mcp-gateway" alt="PyPI"></a>
+  <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"></a>
+  <a href="https://github.com/sinhphamvj/agentic-mcp-gateway"><img src="https://img.shields.io/github/stars/sinhphamvj/agentic-mcp-gateway?style=social" alt="Stars"></a>
+</p>
+
+---
+
+`agentic-mcp-gateway` is an open-source Python framework for building robust, multi-server Model Context Protocol (MCP) agent workflows. Run any LLM (OpenAI, NVIDIA NIM, Anthropic, Ollama) and orchestrate tool usage across multiple independent MCP servers using an intelligent LangGraph intent classifier.
+
+## Demo
+
+<p align="center">
+  <img src="assets/demo.gif" alt="agentic-mcp-gateway Demo" width="100%">
+</p>
 
 ## Features
 
@@ -41,6 +63,19 @@ flowchart TD
     ResponseCompiler -->|With OTel Trace| User
 ```
 
+## Why agentic-mcp-gateway?
+
+Most current solutions for Model Context Protocol (MCP) are either single-client SDKs or rigid adapters. `agentic-mcp-gateway` bridges the gap between raw LLM capabilities and complex multi-server environments by using **LangGraph** to perform intelligent routing, state management, and orchestration.
+
+| Feature | agentic-mcp-gateway | langchain-mcp-adapters | LiteLLM (raw) |
+| :--- | :---: | :---: | :---: |
+| **Multi-Server Orchestration** | **Yes** (Unified intent router) | No (Single client adapter) | No |
+| **State & Memory** | **Yes** (LangGraph native) | No | No |
+| **Tool Routing Model** | **Structured Classifier** (Swappable) | Fallback only | Manual configuration |
+| **Observability** | **Native OpenTelemetry** + Phoenix | Basic logging | Standard OTel |
+| **Skills Export** | **OpenClaw (JSON)** | No | No |
+| **Declarative Workflows** | **YAML configuration** | Python code | Python code |
+
 ## Quick Start
 
 Follow these 5 steps to get up and running:
@@ -62,12 +97,12 @@ Follow these 5 steps to get up and running:
 
 4. **Start the gateway**:
    ```bash
-   amcpg start --config workflow.yaml
+   amcpg serve --config workflow.yaml
    ```
 
 5. **Test it**:
    ```bash
-   curl -X POST http://localhost:8080/v1/chat/completions \
+   curl -X POST http://localhost:8081/v1/chat/completions \
      -H "Content-Type: application/json" \
      -d '{"messages": [{"role": "user", "content": "List files in my directory"}]}'
    ```
@@ -134,6 +169,43 @@ We use OpenTelemetry to trace every step of your LLM interactions and tool calls
 - Ensure `OTEL_EXPORTER_OTLP_ENDPOINT` is set in your environment.
 - Start Arize Phoenix locally (default port `6006`) to view your traces: `PHOENIX_PORT=6006 python -m phoenix.server`
 
+## Real-World Use Cases
+
+### 1. File Analyst Agent
+Inspects repository changes, audits security rules, and runs linters.
+- **Server**: `mcp-server-filesystem`
+- **Intent**: `FILE_ANALYSIS` (reads files, processes content, returns reports)
+- **Prompt**: *"Analyze my project dependencies and suggest version updates."*
+
+### 2. Live Database Assistant
+Provides natural language querying and schema exploration.
+- **Server**: `demo-db` (SQLite/PostgreSQL)
+- **Intent**: `QUERY` (translates user request to SELECT queries, executes safely)
+- **Prompt**: *"Find the top 5 customers who placed the most orders last month."*
+
+### 3. DevOps Assistant
+Orchestrates CLI tooling, server statuses, and deployments.
+- **Server**: Local command-line tool integrations
+- **Intent**: `DEPLOY` (verifies build, checks status, triggers deployment)
+
+## Roadmap
+
+- [x] **v0.1.0 (Current)**: LangGraph intent routing, OTel tracing, YAML config, SQLite demo.
+- [ ] **v0.2.0**: Advanced multi-agent conversation states, persistent chat memory.
+- [ ] **v0.3.0**: Native Web UI for visual workflow building and real-time trace inspection.
+- [ ] **v0.4.0**: Authentication and access-control list (ACL) support for secure server access.
+
+## Used By
+
+*This project is actively used to power multi-agent workflows in production environments.*
+- **OpenClaw Agent Lab**: Orchestrating serverless python functions.
+- **AgentMemory**: Indexing vector memory states through gateway endpoints.
+
+## Sponsors
+
+Support this project to help us build a more open and connected agent ecosystem!
+- [Sponsor sinhphamvj on GitHub](https://github.com/sponsors/sinhphamvj)
+
 ## Contributing
 
 We welcome contributions! Please see our [CONTRIBUTING.md](./CONTRIBUTING.md) for details on how to set up the development environment, run tests, and submit pull requests.
@@ -144,4 +216,4 @@ This project is licensed under the Apache-2.0 License - see the [LICENSE](./LICE
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=sinh/agentic-mcp-gateway&type=Date)](https://star-history.com/#sinh/agentic-mcp-gateway&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=sinhphamvj/agentic-mcp-gateway&type=Date)](https://star-history.com/#sinhphamvj/agentic-mcp-gateway&Date)
