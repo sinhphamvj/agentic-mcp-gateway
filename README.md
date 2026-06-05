@@ -216,4 +216,4 @@ This project is licensed under the Apache-2.0 License - see the [LICENSE](./LICE
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=sinhphamvj/agentic-mcp-gateway&type=Date)](https://star-history.com/#sinhphamvj/agentic-mcp-gateway&Date)
+Check out the star growth of this project over time on the [Star History Chart](https://star-history.com/#sinhphamvj/agentic-mcp-gateway&Date).
