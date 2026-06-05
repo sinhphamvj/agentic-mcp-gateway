@@ -81,9 +81,7 @@ def create_intent_classifier(
 
 def _classifier_prompt(intents: Sequence[IntentConfig]) -> str:
     """Create the system prompt used for intent classification."""
-    intent_lines = "\n".join(
-        f"- {intent.name}: {intent.description}" for intent in intents
-    )
+    intent_lines = "\n".join(f"- {intent.name}: {intent.description}" for intent in intents)
     return (
         "Classify the user's request into one configured intent. "
         f"Use {UNKNOWN_INTENT} if none match.\n\nIntents:\n{intent_lines}"

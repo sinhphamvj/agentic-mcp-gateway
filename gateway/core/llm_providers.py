@@ -62,7 +62,7 @@ class LLMClient:
             self.config.provider.value,
             self.config.model_name,
         ) as span:
-            response = await self._client.chat.completions.create(**kwargs)
+            response = await self._client.chat.completions.create(**kwargs)  # type: ignore[call-overload]
             if span is not None:
                 usage = getattr(response, "usage", None)
                 if usage is not None:
@@ -90,9 +90,11 @@ class LLMClient:
         ):
             response = await self._client.beta.chat.completions.parse(
                 model=self.config.model_name,
-                messages=messages,
+                messages=messages,  # type: ignore[arg-type]
                 response_format=response_model,
                 temperature=self.config.temperature,
             )
-            return response.choices[0].message.parsed
-
+            parsed = response.choices[0].message.parsed
+            if parsed is None:
+                raise ValueError("Failed to parse response schema.")
+            return parsed

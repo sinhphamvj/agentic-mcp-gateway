@@ -234,14 +234,18 @@ class FakeWorkflowLLM:
 
     def __init__(self, intent: str, tool_calls: list[object] | None = None) -> None:
         self.intent = intent
-        self.tool_calls = [
-            SimpleNamespace(
-                function=SimpleNamespace(
-                    name="lookup_customer",
-                    arguments='{"customer_id": "42"}',
+        self.tool_calls = (
+            [
+                SimpleNamespace(
+                    function=SimpleNamespace(
+                        name="lookup_customer",
+                        arguments='{"customer_id": "42"}',
+                    )
                 )
-            )
-        ] if tool_calls is None else tool_calls
+            ]
+            if tool_calls is None
+            else tool_calls
+        )
         self.structured_calls: list[dict[str, object]] = []
         self.chat_calls: list[dict[str, object]] = []
 
@@ -274,9 +278,7 @@ def make_workflow_config() -> WorkflowConfig:
     """Build a minimal workflow config for orchestrator tests."""
     return WorkflowConfig(
         llm=LLMConfig(provider=LLMProvider.OPENAI, model_name="gpt-test"),
-        mcp_servers=[
-            MCPServerConfig(name="db", transport="http", url="http://localhost:8000/mcp")
-        ],
+        mcp_servers=[MCPServerConfig(name="db", transport="http", url="http://localhost:8000/mcp")],
         intents=[
             IntentConfig(
                 name="lookup",
