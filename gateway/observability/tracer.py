@@ -88,6 +88,7 @@ def is_tracing_enabled() -> bool:
 # Span context-managers
 # ---------------------------------------------------------------------------
 
+
 @contextmanager
 def trace_tool_call(
     server_name: str,

@@ -177,6 +177,7 @@ class GatewayOrchestrator:
             "response": "",
             "metadata": {},
         }
+        assert self.workflow is not None
         result = await self.workflow.ainvoke(
             initial_state,
             config={"configurable": {"thread_id": thread_id}},
