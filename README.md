@@ -14,7 +14,6 @@
 
 <p align="center">
   <a href="https://github.com/sinhphamvj/agentic-mcp-gateway/actions"><img src="https://github.com/sinhphamvj/agentic-mcp-gateway/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://pypi.org/project/agentic-mcp-gateway/"><img src="https://img.shields.io/pypi/v/agentic-mcp-gateway" alt="PyPI"></a>
   <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"></a>
   <a href="https://github.com/sinhphamvj/agentic-mcp-gateway"><img src="https://img.shields.io/github/stars/sinhphamvj/agentic-mcp-gateway?style=social" alt="Stars"></a>
 </p>
@@ -67,14 +66,17 @@ flowchart TD
 
 Most current solutions for Model Context Protocol (MCP) are either single-client SDKs or rigid adapters. `agentic-mcp-gateway` bridges the gap between raw LLM capabilities and complex multi-server environments by using **LangGraph** to perform intelligent routing, state management, and orchestration.
 
-| Feature | agentic-mcp-gateway | langchain-mcp-adapters | LiteLLM (raw) |
-| :--- | :---: | :---: | :---: |
-| **Multi-Server Orchestration** | **Yes** (Unified intent router) | No (Single client adapter) | No |
-| **State & Memory** | **Yes** (LangGraph native) | No | No |
-| **Tool Routing Model** | **Structured Classifier** (Swappable) | Fallback only | Manual configuration |
-| **Observability** | **Native OpenTelemetry** + Phoenix | Basic logging | Standard OTel |
-| **Skills Export** | **OpenClaw (JSON)** | No | No |
-| **Declarative Workflows** | **YAML configuration** | Python code | Python code |
+### Design highlights
+
+| Capability | How it works in `agentic-mcp-gateway` |
+| :--- | :--- |
+| **Multi-server orchestration** | A single gateway process connects to N MCP servers; an intent classifier routes each request to the right one (or chains them). |
+| **Stateful workflows** | Built on LangGraph — every step is a node in a `StateGraph` with typed `GatewayState` flowing through it. |
+| **Swappable LLM backend** | One config field switches between OpenAI, Anthropic, NVIDIA NIM, and any Ollama-compatible endpoint. |
+| **Structured tool routing** | An LLM-driven intent classifier picks the target server from a schema; routing logic is a plain Python function you can override. |
+| **OpenTelemetry by default** | Every request, classifier call, and tool invocation is traced. Point `OTEL_EXPORTER_OTLP_ENDPOINT` at Arize Phoenix (or any OTel collector) to inspect. |
+| **OpenClaw skill export** | `amcpg skills openclaw-setup` turns your configured tools into a `SKILL.md` compatible with the OpenClaw skill format. |
+| **YAML-first configuration** | Define LLM, agents, and MCP servers in `workflow.yaml`; no Python glue required for the common case. |
 
 ## Quick Start
 
@@ -195,11 +197,15 @@ Orchestrates CLI tooling, server statuses, and deployments.
 - [ ] **v0.3.0**: Native Web UI for visual workflow building and real-time trace inspection.
 - [ ] **v0.4.0**: Authentication and access-control list (ACL) support for secure server access.
 
-## Used By
+## Reference Implementations
 
-*This project is actively used to power multi-agent workflows in production environments.*
-- **OpenClaw Agent Lab**: Orchestrating serverless python functions.
-- **AgentMemory**: Indexing vector memory states through gateway endpoints.
+The following end-to-end examples live in this repository and demonstrate real, runnable workflows built on the gateway:
+
+- [`examples/devops-assistant`](./examples/devops-assistant) — Natural-language control of Docker containers and logs.
+- [`examples/music-store`](./examples/music-store) — Multi-agent querying over a SQLite music catalog.
+- [`examples/research-agent`](./examples/research-agent) — Research workflow orchestrated through MCP tool routing.
+
+> **Using `agentic-mcp-gateway` in production?** Open a PR to add your project to this list.
 
 ## Sponsors
 
