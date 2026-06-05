@@ -1,0 +1,44 @@
+# Music Store Demo — Chinook Database Assistant
+# Uses the database MCP server to query the Chinook music database.
+
+llm:
+  provider: openai
+  model_name: gpt-4o-mini
+  api_key_env: OPENAI_API_KEY
+  temperature: 0.0
+  max_tokens: 4096
+
+mcp_servers:
+  - name: music-db
+    transport: http
+    url: http://localhost:8000/mcp
+    description: "Chinook music store SQLite database"
+
+intents:
+  - name: QNA
+    description: "Questions about artists, albums, tracks, genres, playlists, customers, and invoices"
+    mcp_server: music-db
+    system_prompt: |
+      You are a music store assistant with access to the Chinook database.
+      Use the query_database tool to answer questions about artists, albums,
+      tracks, genres, playlists, customers, employees, and invoices.
+      Tables: Artist, Album, Track, Genre, Playlist, PlaylistTrack,
+      Customer, Employee, Invoice, InvoiceLine, MediaType.
+      Always use SELECT queries. Never invent data.
+      Format results clearly for the user.
+
+  - name: REFUND
+    description: "Customer requests for refunds or billing disputes"
+    mcp_server: music-db
+    system_prompt: |
+      You are a refund processing agent for the Chinook music store.
+      Use the query_database tool to look up invoices and invoice lines.
+      Always confirm the invoice exists before processing.
+      Ask the customer for their InvoiceId or email to look up their purchase.
+      NEVER process a refund without explicit human approval.
+
+gateway_port: 8001
+enable_tracing: true
+
+human_in_the_loop_intents:
+  - REFUND

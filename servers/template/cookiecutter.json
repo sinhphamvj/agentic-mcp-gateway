@@ -1,0 +1,5 @@
+{
+  "project_name": "example-mcp-server",
+  "tool_names": "example_tool",
+  "port": "8010"
+}

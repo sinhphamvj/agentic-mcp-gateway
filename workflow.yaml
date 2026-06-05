@@ -1,0 +1,43 @@
+# Default Gateway Workflow — Demo Database
+# A minimal configuration demonstrating the gateway with the built-in
+# database MCP server. Start the database server first:
+#   DB_PATH=sample.db uv run python servers/database/server.py
+# Then start the gateway:
+#   GATEWAY_CONFIG=workflow.yaml uv run amcpg serve
+
+llm:
+  provider: openai
+  model_name: gpt-4o-mini
+  api_key_env: OPENAI_API_KEY
+  temperature: 0.0
+  max_tokens: 4096
+
+mcp_servers:
+  - name: demo-db
+    transport: http
+    url: http://localhost:8000/mcp
+    description: "Demo SQLite database with users, products, and orders"
+
+intents:
+  - name: QUERY
+    description: "Ask questions about the database — users, products, orders, or any data"
+    mcp_server: demo-db
+    system_prompt: |
+      You are a helpful database assistant. Use the query_database tool
+      to answer user questions about the demo database.
+      Available tables: users, products, orders.
+      Always use SELECT queries. Never invent data.
+
+  - name: SCHEMA
+    description: "Ask about database structure, tables, columns, or relationships"
+    mcp_server: demo-db
+    system_prompt: |
+      You are a database schema expert. Use the list_tables and
+      query_database tools to describe the database structure.
+      You can run: SELECT sql FROM sqlite_master WHERE type='table'
+      to show CREATE TABLE statements.
+
+gateway_port: 8001
+enable_tracing: true
+
+human_in_the_loop_intents: []

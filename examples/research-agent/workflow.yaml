@@ -1,0 +1,56 @@
+# Research Agent — Multi-Source Search & Notes
+# Uses two MCP servers: REST API for web search and Filesystem for note storage.
+
+llm:
+  provider: openai
+  model_name: gpt-4o-mini
+  api_key_env: OPENAI_API_KEY
+  temperature: 0.2
+  max_tokens: 4096
+
+mcp_servers:
+  - name: search-api
+    transport: http
+    url: http://localhost:8003/mcp
+    description: "REST-to-MCP bridge for search APIs (DuckDuckGo, Wikipedia, etc.)"
+
+  - name: notes-fs
+    transport: http
+    url: http://localhost:8004/mcp
+    description: "Filesystem MCP server for saving and reading research notes"
+
+intents:
+  - name: SEARCH
+    description: "Search the web for information, papers, articles, or facts"
+    mcp_server: search-api
+    system_prompt: |
+      You are a research assistant that searches the web for information.
+      Use the call_api tool to query search APIs.
+      Example: GET https://api.duckduckgo.com/?q={query}&format=json
+      Summarize findings concisely with source attribution.
+      Prioritize recent and authoritative sources.
+
+  - name: SAVE_NOTE
+    description: "Save research findings, summaries, or notes to the filesystem"
+    mcp_server: notes-fs
+    system_prompt: |
+      You are a research note-taker.
+      The user wants to save a note or research finding.
+      Use filesystem tools to store notes under the research directory.
+      Create descriptive filenames based on the topic.
+      Format notes in Markdown for readability.
+
+  - name: SUMMARIZE
+    description: "Summarize previously saved research notes or search results"
+    mcp_server: notes-fs
+    system_prompt: |
+      You are a research summarizer.
+      Use filesystem tools to read previously saved notes.
+      Create concise, structured summaries highlighting key findings,
+      open questions, and potential next steps.
+      Use bullet points and headers for clarity.
+
+gateway_port: 8001
+enable_tracing: true
+
+human_in_the_loop_intents: []

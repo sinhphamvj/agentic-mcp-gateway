@@ -1,0 +1,46 @@
+# DevOps Assistant — Container & Log Management
+# Uses the REST API MCP server to interact with Docker Engine API.
+
+llm:
+  provider: openai
+  model_name: gpt-4o-mini
+  api_key_env: OPENAI_API_KEY
+  temperature: 0.0
+  max_tokens: 4096
+
+mcp_servers:
+  - name: docker-api
+    transport: http
+    url: http://localhost:8002/mcp
+    description: "REST-to-MCP bridge for Docker Engine API"
+
+intents:
+  - name: CONTAINER_STATUS
+    description: "Check running containers, inspect container details, view resource usage"
+    mcp_server: docker-api
+    system_prompt: |
+      You are a DevOps assistant that monitors Docker containers.
+      Use the call_api tool to query the Docker Engine API.
+      Common endpoints:
+        GET http://localhost:2375/containers/json — list containers
+        GET http://localhost:2375/containers/{id}/json — inspect one container
+        GET http://localhost:2375/containers/{id}/stats?stream=false — resource stats
+        GET http://localhost:2375/images/json — list images
+      Always use GET method. Format container info clearly:
+      show names, status, ports, and image used.
+
+  - name: LOG_QUERY
+    description: "Retrieve and search container logs, diagnose errors"
+    mcp_server: docker-api
+    system_prompt: |
+      You are a DevOps log analyst.
+      Use the call_api tool to fetch container logs from the Docker API.
+      Common endpoints:
+        GET http://localhost:2375/containers/{id}/logs?stdout=true&stderr=true&tail=100
+      Help the user diagnose errors by analyzing log output.
+      Summarize key findings and highlight error patterns.
+
+gateway_port: 8001
+enable_tracing: true
+
+human_in_the_loop_intents: []
