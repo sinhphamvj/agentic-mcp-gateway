@@ -46,3 +46,7 @@ htmlcov/
 # Local worktrees
 .worktrees/
 worktrees/
+
+# Agent instructions
+AGENTS.md
+CODEX_PROJECT_PLAN.md
