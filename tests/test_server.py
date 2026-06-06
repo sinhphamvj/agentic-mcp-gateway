@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -229,3 +231,96 @@ def test_resume_endpoint_propagates_orchestrator_errors(
     )
 
     assert response.status_code == 500
+
+
+# ---------------------------------------------------------------------------
+# Streaming SSE tests (F9)
+# ---------------------------------------------------------------------------
+
+
+async def _fake_stream_chat_impl(
+    messages: list[dict[str, object]],
+    tools: object = None,
+) -> Any:
+    """Fake stream_chat that yields text deltas."""
+    yield ("delta", "Hello")
+    yield ("delta", " world")
+    yield ("usage", {"prompt_tokens": 5, "completion_tokens": 7})
+    yield ("done", None)
+
+
+def test_chat_completions_returns_sse_when_stream_true(
+    mock_orchestrator: GatewayOrchestrator,
+) -> None:
+    """POST /v1/chat/completions with stream=true returns SSE."""
+    mock_orchestrator.llm_client = SimpleNamespace(stream_chat=_fake_stream_chat_impl)  # type: ignore[assignment]
+
+    client, _app = _build_app_with_mock(mock_orchestrator)
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "Hi"}],
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert "text/event-stream" in response.headers["content-type"]
+
+
+def test_sse_chunks_parse_as_valid_openai_chunks(
+    mock_orchestrator: GatewayOrchestrator,
+) -> None:
+    """Each SSE data chunk is a valid JSON object matching OpenAI chunk format."""
+    import json
+
+    mock_orchestrator.llm_client = SimpleNamespace(stream_chat=_fake_stream_chat_impl)  # type: ignore[assignment]
+
+    client, _app = _build_app_with_mock(mock_orchestrator)
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "Hi"}],
+            "stream": True,
+        },
+    )
+
+    body = response.text
+    chunks = body.strip().split("\n\n")
+    assert len(chunks) == 6  # role + 2 deltas + usage + stop + [DONE]
+
+    # First chunk sets the role
+    first = json.loads(chunks[0][6:])
+    assert first["choices"][0]["delta"]["role"] == "assistant"
+
+    # Middle chunks carry content
+    second = json.loads(chunks[1][6:])
+    assert second["choices"][0]["delta"]["content"] == "Hello"
+    third = json.loads(chunks[2][6:])
+    assert third["choices"][0]["delta"]["content"] == " world"
+
+    # Final non-DONE chunk has finish_reason
+    stop_chunk = json.loads(chunks[4][6:])
+    assert stop_chunk["choices"][0]["finish_reason"] == "stop"
+
+    # Last chunk is the termination marker
+    assert chunks[-1] == "data: [DONE]"
+
+
+def test_chat_completions_returns_json_when_stream_false(
+    mock_orchestrator: GatewayOrchestrator,
+) -> None:
+    """Without stream=true the endpoint still returns a normal JSON response."""
+    client, _app = _build_app_with_mock(mock_orchestrator)
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "Hi"}],
+            "stream": False,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/json"
+    body = response.json()
+    assert body["object"] == "chat.completion"

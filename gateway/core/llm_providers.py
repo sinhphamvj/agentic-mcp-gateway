@@ -75,6 +75,33 @@ class LLMClient:
             return await self._anthropic_chat(messages, tools)
         return await self._openai_chat(messages, tools)
 
+    async def stream_chat(
+        self,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]] | None = None,
+    ) -> Any:
+        """Stream a chat completion, yielding ``(event_type, data)`` tuples.
+
+        Event types:
+        - ``("delta", str)`` — a text fragment.
+        - ``("tool_call", list)`` — partial tool-call deltas.
+        - ``("usage", dict)`` — final token-usage stats.
+        - ``("done", None)`` — stream finished.
+
+        Args:
+            messages: OpenAI-compatible chat messages.
+            tools: Optional OpenAI-compatible tool definitions.
+
+        Yields:
+            ``(event, data)`` tuples.
+        """
+        if self._anthropic:
+            async for event in self._anthropic_stream_chat(messages, tools):
+                yield event
+        else:
+            async for event in self._openai_stream_chat(messages, tools):
+                yield event
+
     async def structured_output(
         self,
         messages: list[dict[str, object]],
@@ -124,6 +151,36 @@ class LLMClient:
                     span.set_attribute("llm.tokens", total)
             return response
 
+    async def _openai_stream_chat(
+        self,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]] | None,
+    ) -> Any:
+        kwargs: dict[str, object] = {
+            "model": self.config.model_name,
+            "messages": messages,
+            "temperature": self.config.temperature,
+            "max_tokens": self.config.max_tokens,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if tools is not None:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
+
+        with trace_llm_call(self.config.provider.value, self.config.model_name):
+            stream = await self._client.chat.completions.create(**kwargs)  # type: ignore[call-overload]
+            async for chunk in stream:
+                if chunk.choices:
+                    delta = chunk.choices[0].delta
+                    if delta.content:
+                        yield ("delta", delta.content)
+                    if delta.tool_calls:
+                        yield ("tool_call", delta.tool_calls)
+                if chunk.usage:
+                    yield ("usage", chunk.usage.model_dump())
+        yield ("done", None)
+
     async def _openai_structured_output(
         self,
         messages: list[dict[str, object]],
@@ -169,6 +226,50 @@ class LLMClient:
                     total = (usage.input_tokens or 0) + (usage.output_tokens or 0)
                     span.set_attribute("llm.tokens", total)
             return _from_anthropic_response(response)
+
+    async def _anthropic_stream_chat(
+        self,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]] | None,
+    ) -> Any:
+        anthropic_msgs, system = _to_anthropic_messages(messages)
+        kwargs: dict[str, object] = {
+            "model": self.config.model_name,
+            "messages": anthropic_msgs,
+            "max_tokens": self.config.max_tokens,
+            "stream": True,
+        }
+        if system:
+            kwargs["system"] = system
+        if tools:
+            kwargs["tools"] = _to_anthropic_tools(tools)
+
+        with trace_llm_call(self.config.provider.value, self.config.model_name):
+            stream = await self._client.messages.create(**kwargs)  # type: ignore[call-overload]
+            async for event in stream:
+                event_type: str = event["type"]
+                if event_type == "content_block_start":
+                    block = event["content_block"]
+                    if getattr(block, "type", block.get("type", "")) == "text":
+                        text = getattr(block, "text", block.get("text", ""))
+                        if text:
+                            yield ("delta", text)
+                elif event_type == "content_block_delta":
+                    delta = event["delta"]
+                    delta_type = getattr(delta, "type", delta.get("type", ""))
+                    if delta_type == "text_delta":
+                        text = getattr(delta, "text", delta.get("text", ""))
+                        if text:
+                            yield ("delta", text)
+                    elif delta_type == "input_json_delta":
+                        partial = getattr(delta, "partial_json", delta.get("partial_json", ""))
+                        if partial:
+                            yield ("tool_call", partial)
+                elif event_type == "message_delta":
+                    usage = event.get("usage")
+                    if usage:
+                        yield ("usage", dict(usage))
+        yield ("done", None)
 
     async def _anthropic_structured_output(
         self,

@@ -28,8 +28,35 @@ class FakeChatCompletions:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
 
-    async def create(self, **kwargs: Any) -> dict[str, Any]:
+    async def create(self, **kwargs: Any) -> dict[str, Any] | Any:
         self.calls.append(kwargs)
+        if kwargs.get("stream"):
+
+            async def _stream():
+                yield SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(content="Hello", tool_calls=None),
+                        )
+                    ],
+                    usage=None,
+                )
+                yield SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(content=" world", tool_calls=None),
+                        )
+                    ],
+                    usage=SimpleNamespace(
+                        model_dump=lambda: {
+                            "prompt_tokens": 5,
+                            "completion_tokens": 7,
+                        }
+                    ),
+                )
+
+            return _stream()
+
         return {"created": kwargs}
 
 
@@ -95,9 +122,30 @@ class FakeAnthropicMessages:
 
     async def create(self, **kwargs: Any) -> Any:
         self.calls.append(kwargs)
+        if kwargs.get("stream"):
+
+            async def _stream():
+                yield {
+                    "type": "content_block_start",
+                    "content_block": {"type": "text", "text": "Hello"},
+                }
+                yield {
+                    "type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": " from"},
+                }
+                yield {
+                    "type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": " Claude"},
+                }
+                yield {
+                    "type": "message_delta",
+                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                }
+
+            return _stream()
+
         tool_name = kwargs.get("tool_choice", {}).get("name")
         if tool_name:
-            # Return a tool-use response for structured output
             return SimpleNamespace(
                 content=[
                     SimpleNamespace(
@@ -570,3 +618,62 @@ async def test_anthropic_chat_tool_call_response(monkeypatch: pytest.MonkeyPatch
     assert tc.id == "tu_abc"
     assert tc.function.name == "lookup"
     assert tc.function.arguments == '{"key": "value"}'
+
+
+# ------------------------------------------------------------------
+# Streaming tests
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_openai_stream_chat_yields_text_deltas(monkeypatch: pytest.MonkeyPatch) -> None:
+    """stream_chat with OpenAI yields text deltas and a done event."""
+    import gateway.core.llm_providers as llm_module
+
+    FakeAsyncOpenAI.instances = []
+    monkeypatch.setattr(llm_module, "AsyncOpenAI", FakeAsyncOpenAI)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret")
+
+    client = LLMClient(
+        LLMConfig(
+            provider=LLMProvider.OPENAI,
+            model_name="gpt-4o",
+            api_key_env="OPENAI_API_KEY",
+        )
+    )
+    messages = [{"role": "user", "content": "Say hello"}]
+
+    events: list[tuple[str, object]] = []
+    async for event in client.stream_chat(messages):
+        events.append(event)
+
+    assert ("delta", "Hello") in events
+    assert ("delta", " world") in events
+    assert ("usage", {"prompt_tokens": 5, "completion_tokens": 7}) in events
+    assert events[-1] == ("done", None)
+
+
+@pytest.mark.asyncio
+async def test_anthropic_stream_chat_yields_text_deltas(monkeypatch: pytest.MonkeyPatch) -> None:
+    """stream_chat with Anthropic yields text deltas and a done event."""
+    monkeypatch.setattr("anthropic.AsyncAnthropic", FakeAsyncAnthropic)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+
+    client = LLMClient(
+        LLMConfig(
+            provider=LLMProvider.ANTHROPIC,
+            model_name="claude-sonnet-4-20250514",
+            api_key_env="ANTHROPIC_API_KEY",
+            max_tokens=512,
+        )
+    )
+    messages = [{"role": "user", "content": "Say hello"}]
+
+    events: list[tuple[str, object]] = []
+    async for event in client.stream_chat(messages):
+        events.append(event)
+
+    assert ("delta", "Hello") in events
+    assert ("delta", " from") in events
+    assert ("delta", " Claude") in events
+    assert events[-1] == ("done", None)

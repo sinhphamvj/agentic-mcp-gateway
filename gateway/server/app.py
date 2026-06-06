@@ -13,14 +13,15 @@ are present. The goal is "curl works" — not full API parity.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import json
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
 from pydantic import BaseModel, Field
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 from gateway.core.config import load_config
@@ -94,11 +95,119 @@ async def health(_request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
-async def chat_completions(request: Request) -> JSONResponse:
+async def _stream_response(
+    request: Request,
+    messages: list[dict[str, object]],
+) -> AsyncGenerator[str, None]:
+    """Yield SSE-formatted chunks from the LLM."""
+    orchestrator: GatewayOrchestrator = request.app.state.orchestrator
+    llm_client = orchestrator.llm_client
+
+    # First chunk: set the role
+    yield (
+        "data: "
+        + json.dumps(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": ""},
+                        "finish_reason": None,
+                    }
+                ],
+                "object": "chat.completion.chunk",
+            }
+        )
+        + "\n\n"
+    )
+
+    async for event_type, data in llm_client.stream_chat(messages):
+        if event_type == "delta":
+            yield (
+                "data: "
+                + json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"content": data},
+                                "finish_reason": None,
+                            }
+                        ],
+                        "object": "chat.completion.chunk",
+                    }
+                )
+                + "\n\n"
+            )
+        elif event_type == "tool_call":
+            yield (
+                "data: "
+                + json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"tool_calls": data},
+                                "finish_reason": None,
+                            }
+                        ],
+                        "object": "chat.completion.chunk",
+                    }
+                )
+                + "\n\n"
+            )
+        elif event_type == "usage":
+            yield (
+                "data: "
+                + json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {},
+                                "finish_reason": None,
+                            }
+                        ],
+                        "object": "chat.completion.chunk",
+                        "usage": data,
+                    }
+                )
+                + "\n\n"
+            )
+        elif event_type == "done":
+            # Final chunk with finish_reason
+            yield (
+                "data: "
+                + json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {},
+                                "finish_reason": "stop",
+                            }
+                        ],
+                        "object": "chat.completion.chunk",
+                    }
+                )
+                + "\n\n"
+            )
+            yield "data: [DONE]\n\n"
+
+
+async def chat_completions(request: Request) -> JSONResponse | StreamingResponse:
     """Run one turn of the gateway workflow and return the response."""
     orchestrator: GatewayOrchestrator = request.app.state.orchestrator
     body = await request.json()
     payload = ChatCompletionRequest.model_validate(body)
+
+    if payload.stream:
+        messages_dicts = [m.model_dump() for m in payload.messages]
+        return StreamingResponse(
+            _stream_response(request, messages_dicts),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
 
     user_message = _last_user_message(payload.messages)
     if not user_message:
