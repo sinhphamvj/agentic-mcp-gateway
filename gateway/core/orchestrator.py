@@ -106,6 +106,7 @@ class GatewayOrchestrator:
             self._sqlite_cm = SqliteSaver.from_conn_string(path)
             return self._sqlite_cm.__enter__()
         from langgraph.checkpoint.memory import InMemorySaver
+
         return InMemorySaver()
 
     def _create_agent_node(self, intent_cfg: IntentConfig) -> Any:
@@ -151,15 +152,17 @@ class GatewayOrchestrator:
                 # Human-in-the-loop: pause for approval before executing tools.
                 if not hitl_checked and intent_cfg.name in self.config.human_in_the_loop_intents:
                     hitl_checked = True
-                    approval = interrupt({
-                        "type": "human_in_the_loop",
-                        "intent": intent_cfg.name,
-                        "proposed_tool_calls": [
-                            {"name": pc["name"], "arguments": pc["arguments"]}
-                            for pc in parsed_calls
-                        ],
-                        "user_message": _last_message_text(state.get("messages", [])),
-                    })
+                    approval = interrupt(
+                        {
+                            "type": "human_in_the_loop",
+                            "intent": intent_cfg.name,
+                            "proposed_tool_calls": [
+                                {"name": pc["name"], "arguments": pc["arguments"]}
+                                for pc in parsed_calls
+                            ],
+                            "user_message": _last_message_text(state.get("messages", [])),
+                        }
+                    )
                     if not approval.get("approved", False):
                         return {
                             "active_server": intent_cfg.mcp_server,
@@ -167,21 +170,23 @@ class GatewayOrchestrator:
                             "tool_results": [],
                         }
 
-                messages.append({
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": pc["id"],
-                            "type": "function",
-                            "function": {
-                                "name": pc["name"],
-                                "arguments": json.dumps(pc["arguments"]),  # type: ignore[arg-type]
-                            },
-                        }
-                        for pc in parsed_calls
-                    ],
-                })
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": pc["id"],
+                                "type": "function",
+                                "function": {
+                                    "name": pc["name"],
+                                    "arguments": json.dumps(pc["arguments"]),  # type: ignore[arg-type]
+                                },
+                            }
+                            for pc in parsed_calls
+                        ],
+                    }
+                )
 
                 for pc in parsed_calls:
                     result = await self.mcp_manager.call_tool(
@@ -189,11 +194,15 @@ class GatewayOrchestrator:
                         str(pc["name"]),
                         dict(pc["arguments"]),  # type: ignore[call-overload]
                     )
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": str(pc["id"]),
-                        "content": json.dumps(result) if isinstance(result, dict) else str(result),
-                    })
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": str(pc["id"]),
+                            "content": json.dumps(result)
+                            if isinstance(result, dict)
+                            else str(result),
+                        }
+                    )
 
             return {
                 "active_server": intent_cfg.mcp_server,
@@ -258,9 +267,7 @@ class GatewayOrchestrator:
             await self.setup()
 
         assert self.workflow is not None
-        state = await self.workflow.aget_state(
-            {"configurable": {"thread_id": thread_id}}
-        )
+        state = await self.workflow.aget_state({"configurable": {"thread_id": thread_id}})
 
         if state.next:
             try:

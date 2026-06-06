@@ -172,7 +172,8 @@ async def test_hitl_proposed_tool_calls_in_payload(monkeypatch: pytest.MonkeyPat
     assert len(proposed) == 2
     assert proposed[0] == {"name": "process_refund", "arguments": {"order_id": "42"}}
     assert proposed[1] == {
-        "name": "send_notification", "arguments": {"message": "refund processed"}
+        "name": "send_notification",
+        "arguments": {"message": "refund processed"},
     }
 
 
@@ -325,11 +326,7 @@ class FakeWorkflowLLM:
                     )
 
             return SimpleNamespace(
-                choices=[
-                    SimpleNamespace(
-                        message=SimpleNamespace(content=None, tool_calls=calls)
-                    )
-                ]
+                choices=[SimpleNamespace(message=SimpleNamespace(content=None, tool_calls=calls))]
             )
 
         # Second call (tool results present): synthesize text
@@ -337,9 +334,5 @@ class FakeWorkflowLLM:
         refund = "Refund processed successfully."
         content = lookup if self.intent == "lookup" else refund
         return SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(content=content, tool_calls=None)
-                )
-            ]
+            choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=None))]
         )

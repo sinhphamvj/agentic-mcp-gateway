@@ -42,8 +42,7 @@ def test_example_workflow_yaml_loads(yaml_path: Path) -> None:
     server_names = {s.name for s in config.mcp_servers}
     for intent in config.intents:
         assert intent.mcp_server in server_names, (
-            f"Intent '{intent.name}' references unknown server "
-            f"'{intent.mcp_server}' in {yaml_path}"
+            f"Intent '{intent.name}' references unknown server '{intent.mcp_server}' in {yaml_path}"
         )
 
 
@@ -113,6 +112,5 @@ def test_no_obsolete_field_references_in_yaml_blocks() -> None:
         for block in YAML_FENCE_PATTERN.findall(text):
             for bad in bad_substrings:
                 assert bad not in block, (
-                    f"{readme.relative_to(REPO_ROOT)} contains obsolete field '{bad}' "
-                    f"in YAML block"
+                    f"{readme.relative_to(REPO_ROOT)} contains obsolete field '{bad}' in YAML block"
                 )
