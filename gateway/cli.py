@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import click
@@ -19,11 +20,32 @@ def main() -> None:
 
 
 @main.command()
+@click.option(
+    "--config",
+    "-c",
+    "config_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Path to workflow.yaml. Falls back to GATEWAY_CONFIG env var, then ./workflow.yaml.",
+)
 @click.option("--host", default="127.0.0.1", show_default=True, help="Host to bind.")
-@click.option("--port", default=8001, show_default=True, help="Port to bind.")
-def serve(host: str, port: int) -> None:
+@click.option("--port", default=None, type=int, help="Port to bind (default: config.gateway_port).")
+def serve(config_path: Path | None, host: str, port: int | None) -> None:
     """Start the gateway HTTP server."""
-    click.echo(f"Serving agentic-mcp-gateway on {host}:{port}")
+    import uvicorn
+
+    from gateway.server.app import create_app
+
+    resolved_path = config_path or Path(os.environ.get("GATEWAY_CONFIG", "workflow.yaml"))
+    if not resolved_path.exists():
+        raise click.ClickException(f"Config file not found: {resolved_path}")
+
+    config = load_config(resolved_path)
+    effective_port = port if port is not None else config.gateway_port
+
+    click.echo(f"Starting agentic-mcp-gateway on {host}:{effective_port} (config: {resolved_path})")
+    app = create_app(str(resolved_path))
+    uvicorn.run(app, host=host, port=effective_port, log_level="info")
 
 
 @main.group()
