@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -83,6 +84,47 @@ class FakeAsyncOpenAI:
                 )()
             },
         )()
+        self.instances.append(self)
+
+
+class FakeAnthropicMessages:
+    """Fake Anthropic messages endpoint."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def create(self, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+        tool_name = kwargs.get("tool_choice", {}).get("name")
+        if tool_name:
+            # Return a tool-use response for structured output
+            return SimpleNamespace(
+                content=[
+                    SimpleNamespace(
+                        type="tool_use",
+                        id="tu_1",
+                        name=tool_name,
+                        input={"answer": "yes"},
+                    )
+                ],
+                usage=SimpleNamespace(input_tokens=10, output_tokens=5),
+            )
+        return SimpleNamespace(
+            content=[
+                SimpleNamespace(type="text", text="Hello from Claude"),
+            ],
+            usage=SimpleNamespace(input_tokens=10, output_tokens=5),
+        )
+
+
+class FakeAsyncAnthropic:
+    """Fake AsyncAnthropic client that records constructor inputs."""
+
+    instances: list[FakeAsyncAnthropic] = []
+
+    def __init__(self, api_key: str) -> None:
+        self.api_key = api_key
+        self.messages = FakeAnthropicMessages()
         self.instances.append(self)
 
 
@@ -213,11 +255,10 @@ intents: []
     [
         (LLMProvider.OPENAI, "https://api.openai.com/v1", "OPENAI_API_KEY"),
         (LLMProvider.NVIDIA_NIM, "https://integrate.api.nvidia.com/v1", "NVIDIA_API_KEY"),
-        (LLMProvider.ANTHROPIC, "https://api.anthropic.com/v1", "ANTHROPIC_API_KEY"),
         (LLMProvider.OLLAMA, "http://localhost:11434/v1", "OLLAMA_API_KEY"),
     ],
 )
-def test_llm_client_initializes_async_openai_for_all_providers(
+def test_llm_client_initializes_async_openai_for_providers(
     provider: LLMProvider,
     expected_base_url: str,
     api_key_env: str,
@@ -320,3 +361,212 @@ async def test_llm_client_structured_output_returns_pydantic_object(
     assert kwargs["messages"] == messages
     assert kwargs["response_format"] is AnswerModel
     assert kwargs["temperature"] == 0.0
+
+
+# ------------------------------------------------------------------
+# Anthropic provider tests
+# ------------------------------------------------------------------
+
+
+def test_anthropic_client_creation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """LLMClient instantiates AsyncAnthropic for the ANTHROPIC provider."""
+    FakeAsyncAnthropic.instances = []
+    monkeypatch.setattr("anthropic.AsyncAnthropic", FakeAsyncAnthropic)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+
+    client = LLMClient(
+        LLMConfig(
+            provider=LLMProvider.ANTHROPIC,
+            model_name="claude-sonnet-4-20250514",
+            api_key_env="ANTHROPIC_API_KEY",
+        )
+    )
+
+    assert client.config.provider is LLMProvider.ANTHROPIC
+    assert FakeAsyncAnthropic.instances[0].api_key == "sk-ant-secret"
+    assert client._anthropic is True
+
+
+@pytest.mark.asyncio
+async def test_anthropic_chat_text_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    """chat() with Anthropic returns OpenAI-shaped text response."""
+    FakeAsyncAnthropic.instances = []
+    monkeypatch.setattr("anthropic.AsyncAnthropic", FakeAsyncAnthropic)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+
+    client = LLMClient(
+        LLMConfig(
+            provider=LLMProvider.ANTHROPIC,
+            model_name="claude-sonnet-4-20250514",
+            api_key_env="ANTHROPIC_API_KEY",
+            max_tokens=512,
+        )
+    )
+    messages = [{"role": "user", "content": "Say hello"}]
+    response = await client.chat(messages)
+
+    kwargs = FakeAsyncAnthropic.instances[0].messages.calls[0]
+    assert kwargs["model"] == "claude-sonnet-4-20250514"
+    assert kwargs["messages"] == [{"role": "user", "content": "Say hello"}]
+    assert kwargs["max_tokens"] == 512
+    assert "system" not in kwargs
+
+    assert response.choices[0].message.content == "Hello from Claude"
+    assert response.choices[0].message.tool_calls is None
+
+
+@pytest.mark.asyncio
+async def test_anthropic_chat_with_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    """chat() with Anthropic forwards tools in Anthropic format."""
+    FakeAsyncAnthropic.instances = []
+    monkeypatch.setattr("anthropic.AsyncAnthropic", FakeAsyncAnthropic)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+
+    client = LLMClient(
+        LLMConfig(
+            provider=LLMProvider.ANTHROPIC,
+            model_name="claude-sonnet-4-20250514",
+            api_key_env="ANTHROPIC_API_KEY",
+            max_tokens=512,
+        )
+    )
+    messages = [{"role": "user", "content": "Use a tool"}]
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "description": "Lookup data",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+
+    await client.chat(messages, tools=tools)
+
+    kwargs = FakeAsyncAnthropic.instances[0].messages.calls[0]
+    assert "tools" in kwargs
+    assert kwargs["tools"] == [
+        {
+            "name": "lookup",
+            "description": "Lookup data",
+            "input_schema": {"type": "object", "properties": {}},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_anthropic_chat_extracts_system_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """chat() with Anthropic extracts system message from the list."""
+    FakeAsyncAnthropic.instances = []
+    monkeypatch.setattr("anthropic.AsyncAnthropic", FakeAsyncAnthropic)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+
+    client = LLMClient(
+        LLMConfig(
+            provider=LLMProvider.ANTHROPIC,
+            model_name="claude-sonnet-4-20250514",
+            api_key_env="ANTHROPIC_API_KEY",
+            max_tokens=512,
+        )
+    )
+    messages = [
+        {"role": "system", "content": "You are helpful."},
+        {"role": "user", "content": "Hi"},
+    ]
+    await client.chat(messages)
+
+    kwargs = FakeAsyncAnthropic.instances[0].messages.calls[0]
+    assert kwargs["system"] == "You are helpful."
+    assert kwargs["messages"] == [{"role": "user", "content": "Hi"}]
+
+
+@pytest.mark.asyncio
+async def test_anthropic_structured_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    """structured_output() with Anthropic returns parsed Pydantic object."""
+    FakeAsyncAnthropic.instances = []
+    monkeypatch.setattr("anthropic.AsyncAnthropic", FakeAsyncAnthropic)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+
+    client = LLMClient(
+        LLMConfig(
+            provider=LLMProvider.ANTHROPIC,
+            model_name="claude-sonnet-4-20250514",
+            api_key_env="ANTHROPIC_API_KEY",
+            max_tokens=512,
+        )
+    )
+    messages = [{"role": "user", "content": "Answer yes"}]
+    parsed = await client.structured_output(messages, AnswerModel)
+
+    kwargs = FakeAsyncAnthropic.instances[0].messages.calls[0]
+    assert parsed == AnswerModel(answer="yes")
+    assert kwargs["model"] == "claude-sonnet-4-20250514"
+    assert kwargs["tool_choice"] == {"type": "tool", "name": "answermodel"}
+    assert len(kwargs["tools"]) == 1
+    assert kwargs["tools"][0]["name"] == "answermodel"
+
+
+@pytest.mark.asyncio
+async def test_anthropic_chat_tool_call_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    """chat() with Anthropic returns OpenAI-shaped tool_calls when Claude uses tools."""
+    FakeAsyncAnthropic.instances = []
+
+    class FakeToolUseMessages:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def create(self, **kwargs: Any) -> Any:
+            self.calls.append(kwargs)
+            return SimpleNamespace(
+                content=[
+                    SimpleNamespace(
+                        type="tool_use",
+                        id="tu_abc",
+                        name="lookup",
+                        input={"key": "value"},
+                    ),
+                ],
+                usage=SimpleNamespace(input_tokens=10, output_tokens=5),
+            )
+
+    class FakeToolUsingAnthropic:
+        instances: list[FakeToolUsingAnthropic] = []
+
+        def __init__(self, api_key: str) -> None:
+            self.api_key = api_key
+            self.messages = FakeToolUseMessages()
+            self.instances.append(self)
+
+    monkeypatch.setattr("anthropic.AsyncAnthropic", FakeToolUsingAnthropic)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+
+    client = LLMClient(
+        LLMConfig(
+            provider=LLMProvider.ANTHROPIC,
+            model_name="claude-sonnet-4-20250514",
+            api_key_env="ANTHROPIC_API_KEY",
+            max_tokens=512,
+        )
+    )
+    messages = [{"role": "user", "content": "Use lookup tool"}]
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "description": "Lookup",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+
+    response = await client.chat(messages, tools=tools)
+
+    assert response.choices[0].message.content is None
+    assert response.choices[0].message.tool_calls is not None
+    assert len(response.choices[0].message.tool_calls) == 1
+    tc = response.choices[0].message.tool_calls[0]
+    assert tc.id == "tu_abc"
+    assert tc.function.name == "lookup"
+    assert tc.function.arguments == '{"key": "value"}'
