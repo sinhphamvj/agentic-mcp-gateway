@@ -115,13 +115,23 @@ Once your server is ready, register it in your `workflow.yaml` so the gateway ca
 ```yaml
 llm:
   provider: openai
-  model: gpt-4o
+  model_name: gpt-4o-mini
+  api_key_env: OPENAI_API_KEY
+  temperature: 0.0
+  max_tokens: 4096
 
-agents:
-  - name: math_agent
-    description: "An agent that performs mathematical calculations."
-    mcp_servers:
-      - name: custom_math_server
-        command: "python"
-        args: ["/absolute/path/to/my_custom_server.py"]
+mcp_servers:
+  - name: custom_math_server
+    transport: stdio
+    command: "python"
+    args: ["/absolute/path/to/my_custom_server.py"]
+    description: "Custom math MCP server"
+
+intents:
+  - name: MATH
+    description: "Perform mathematical calculations"
+    mcp_server: custom_math_server
+    system_prompt: |
+      You are a math assistant. Use the calculate_sum tool
+      when the user asks for arithmetic.
 ```

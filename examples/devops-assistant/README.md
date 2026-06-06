@@ -65,7 +65,7 @@ From the repository root, launch the REST API MCP server that acts as a
 bridge between MCP tool calls and arbitrary HTTP endpoints (including Docker):
 
 ```bash
-uv run python -m gateway.mcp_servers.rest_api_server --port 8002
+uv run python -m servers.rest_api.server --port 8002
 ```
 
 The server exposes a `call_api` tool at `http://localhost:8002/mcp`.

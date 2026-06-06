@@ -47,7 +47,7 @@ uv sync
 
 ```bash
 # Terminal 1 — serves search tools on port 8003
-uv run python -m gateway.mcp_servers.rest_api_server \
+uv run python -m servers.rest_api.server \
     --port 8003
 ```
 
@@ -57,7 +57,7 @@ uv run python -m gateway.mcp_servers.rest_api_server \
 # Terminal 2 — serves filesystem tools on port 8004
 mkdir -p research-notes
 
-uv run python -m gateway.mcp_servers.filesystem_server \
+uv run python -m servers.filesystem.server \
     --port 8004 \
     --allowed-root ./research-notes
 ```

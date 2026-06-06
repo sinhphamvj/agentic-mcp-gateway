@@ -87,26 +87,26 @@ Follow these 5 steps to get up and running:
    curl -LsSf https://astral.sh/uv/install.sh | sh
    ```
 
-2. **Install the gateway**:
+2. **Install the gateway** (from the repo root):
    ```bash
-   uv pip install agentic-mcp-gateway
+   uv sync
    ```
 
 3. **Start an MCP server** (e.g., local filesystem):
    ```bash
-   mcp-server-filesystem /path/to/files --port 8000
+   uv run python -m servers.filesystem.server --port 8000
    ```
 
 4. **Start the gateway**:
    ```bash
-   amcpg serve --config workflow.yaml
+   uv run amcpg serve --config workflow.yaml
    ```
 
 5. **Test it**:
    ```bash
-   curl -X POST http://localhost:8081/v1/chat/completions \
+   curl -X POST http://localhost:8001/v1/chat/completions \
      -H "Content-Type: application/json" \
-     -d '{"messages": [{"role": "user", "content": "List files in my directory"}]}'
+     -d '{"messages": [{"role": "user", "content": "List tables in the database"}]}'
    ```
 
 ## Configuration Guide
@@ -116,18 +116,28 @@ The gateway is configured via a simple YAML file (`workflow.yaml`). Here is a ba
 ```yaml
 llm:
   provider: openai
-  model: gpt-4o
-  api_key: ${OPENAI_API_KEY}
+  model_name: gpt-4o-mini
+  api_key_env: OPENAI_API_KEY
+  temperature: 0.0
+  max_tokens: 4096
 
-agents:
-  - name: FileAgent
-    description: Handles file system operations
-    mcp_servers:
-      - name: local-fs
-        url: http://localhost:8000
+mcp_servers:
+  - name: local-fs
+    transport: http
+    url: http://localhost:8000/mcp
+    description: "Local filesystem MCP server"
 
-observability:
-  otel_endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT}
+intents:
+  - name: FILE_OPERATION
+    description: Read, list, or search files on the local filesystem
+    mcp_server: local-fs
+    system_prompt: |
+      You are a filesystem assistant. Use the available tools to
+      list directories, read files, and search for files.
+
+gateway_port: 8001
+enable_tracing: true
+human_in_the_loop_intents: []
 ```
 
 ## LLM Providers

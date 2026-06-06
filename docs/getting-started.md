@@ -45,25 +45,34 @@ The gateway is configured using a YAML file. Let's create a simple workflow that
     ```yaml
     llm:
       provider: openai
-      model: gpt-4o
+      model_name: gpt-4o-mini
+      api_key_env: OPENAI_API_KEY
+      temperature: 0.0
+      max_tokens: 4096
 
-    agents:
-      - name: database_agent
-        description: "Handles all queries related to the local SQLite database."
-        mcp_servers:
-          - name: sqlite_server
-            command: "uvx"
-            args: ["mcp-server-sqlite", "--db-path", "./my_database.db"]
+    mcp_servers:
+      - name: sqlite_server
+        transport: http
+        url: http://localhost:8000/mcp
+        description: "Local SQLite MCP server"
+
+    intents:
+      - name: QUERY
+        description: "Ask questions about the local SQLite database"
+        mcp_server: sqlite_server
+        system_prompt: |
+          You are a database assistant. Use the query_database tool
+          to answer user questions.
     ```
 
 2.  Run the gateway:
 
     You can start the gateway using the CLI command provided by the package:
     ```bash
-    amcpg --config workflow.yaml
+    amcpg serve --config workflow.yaml
     ```
 
-    The gateway will start, initialize the specified MCP servers, set up the LangGraph orchestrator, and wait for incoming requests!
+    The gateway will start, initialize the specified MCP servers, set up the LangGraph orchestrator, and listen on `http://localhost:8001` for incoming requests!
 
 ## Next Steps
 
