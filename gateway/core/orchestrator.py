@@ -18,6 +18,12 @@ from gateway.core.state import GatewayState
 from gateway.mcp_client.manager import MCPConnectionManager, ServerConfig
 from gateway.observability.tracer import setup_tracing
 
+# Type alias for the union of checkpointers this orchestrator can hold.
+# SqliteSaver is only available when the 'sqlite' extra is installed; it
+# is referenced dynamically in ``_build_checkpointer`` so importing the
+# type at module load time is intentionally avoided.
+SqliteSaverHolder = Any
+
 
 class GatewayOrchestrator:
     """LangGraph-powered orchestrator for multi-MCP agent workflows."""
@@ -31,8 +37,10 @@ class GatewayOrchestrator:
         self.config = config
         self.llm_client = LLMClient(config.llm)
         self.mcp_manager = MCPConnectionManager()
-        self.checkpointer: InMemorySaver | None = None
+        self.checkpointer: InMemorySaver | SqliteSaverHolder | None = None
         self.workflow: Any | None = None
+        # Holds the SqliteSaver context manager so teardown() can close it.
+        self._sqlite_cm: Any = None
 
     async def setup(self) -> None:
         """Register MCP servers, connect them, and compile the LangGraph workflow."""
@@ -74,8 +82,31 @@ class GatewayOrchestrator:
         graph.add_edge("unknown_handler", END)
         graph.add_edge("compile_response", END)
 
-        self.checkpointer = InMemorySaver()
+        self.checkpointer = self._build_checkpointer()
         self.workflow = graph.compile(checkpointer=self.checkpointer)
+
+    def _build_checkpointer(self) -> InMemorySaver | Any:
+        """Construct the checkpointer configured in the workflow YAML.
+
+        Returns:
+            An open ``BaseCheckpointSaver`` ready to be passed to
+            ``StateGraph.compile``.
+        """
+        cfg = self.config.checkpointer
+        if cfg.backend == "sqlite":
+            try:
+                from langgraph.checkpoint.sqlite import SqliteSaver
+            except ImportError as exc:
+                raise RuntimeError(
+                    "SQLite checkpointer requires the 'sqlite' extra: "
+                    "pip install 'agentic-mcp-gateway[sqlite]' or "
+                    "uv add langgraph-checkpoint-sqlite"
+                ) from exc
+            path = cfg.path or "./gateway_state.db"
+            self._sqlite_cm = SqliteSaver.from_conn_string(path)
+            return self._sqlite_cm.__enter__()
+        from langgraph.checkpoint.memory import InMemorySaver
+        return InMemorySaver()
 
     def _create_agent_node(self, intent_cfg: IntentConfig) -> Any:
         """Create a LangGraph node that calls the LLM and optional MCP tools.
@@ -136,7 +167,7 @@ class GatewayOrchestrator:
                     result = await self.mcp_manager.call_tool(
                         intent_cfg.mcp_server,
                         str(pc["name"]),
-                        dict(pc["arguments"]),
+                        dict(pc["arguments"]),  # type: ignore[call-overload]
                     )
                     messages.append({
                         "role": "tool",
@@ -216,8 +247,12 @@ class GatewayOrchestrator:
         return str(result.get("response", ""))
 
     async def teardown(self) -> None:
-        """Clean up all MCP connections."""
+        """Clean up all MCP connections and close the checkpointer."""
         await self.mcp_manager.cleanup_all()
+        if self._sqlite_cm is not None:
+            self._sqlite_cm.__exit__(None, None, None)
+            self._sqlite_cm = None
+            self.checkpointer = None
 
     @staticmethod
     def _agent_node_name(intent_name: str) -> str:

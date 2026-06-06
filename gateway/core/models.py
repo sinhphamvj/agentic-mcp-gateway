@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -48,6 +49,19 @@ class IntentConfig(BaseModel):
     system_prompt: str = ""
 
 
+class CheckpointerConfig(BaseModel):
+    """Configuration for the workflow's conversation-memory backend.
+
+    When ``backend`` is ``"sqlite"`` the gateway uses
+    ``langgraph-checkpoint-sqlite`` so multi-turn conversations survive
+    process restarts.  When ``"in_memory"`` (the default) state is kept
+    in-process and lost on restart, matching the original behaviour.
+    """
+
+    backend: Literal["sqlite", "in_memory"] = "in_memory"
+    path: str | None = None  # Only used for sqlite; default: ./gateway_state.db
+
+
 class WorkflowConfig(BaseModel):
     """Top-level workflow configuration parsed from YAML."""
 
@@ -58,6 +72,7 @@ class WorkflowConfig(BaseModel):
     enable_tracing: bool = True
     human_in_the_loop_intents: list[str] = Field(default_factory=list)
     max_tool_rounds: int = 3
+    checkpointer: CheckpointerConfig = Field(default_factory=CheckpointerConfig)
 
 
 class ToolSchema(BaseModel):

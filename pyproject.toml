@@ -36,9 +36,9 @@ dev = [
     "pytest-asyncio>=0.23",
     "ruff>=0.5",
     "mypy>=1.10",
-    "pytest-cov>=4.0.0",
-    "types-PyYAML>=6.0.0",
 ]
+sqlite = ["langgraph-checkpoint-sqlite>=3.0"]
+all = ["agentic-mcp-gateway[sqlite,dev]"]
 
 [project.scripts]
 amcpg = "gateway.cli:main"
