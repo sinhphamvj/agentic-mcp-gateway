@@ -9,7 +9,7 @@ from typing import Any
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import interrupt
+from langgraph.types import Command, interrupt
 
 from gateway.core.llm_providers import LLMClient
 from gateway.core.models import IntentConfig, WorkflowConfig
@@ -128,6 +128,7 @@ class GatewayOrchestrator:
                 messages.insert(0, {"role": "system", "content": intent_cfg.system_prompt})
 
             max_rounds = self.config.max_tool_rounds
+            hitl_checked = False
 
             for _round in range(max_rounds):
                 response = await self.llm_client.chat(messages, tools=openai_tools)
@@ -146,6 +147,25 @@ class GatewayOrchestrator:
                     name, args = _parse_tool_call(tc)
                     tc_id = getattr(tc, "id", f"call_{_round}_{name}")
                     parsed_calls.append({"id": tc_id, "name": name, "arguments": args, "raw": tc})
+
+                # Human-in-the-loop: pause for approval before executing tools.
+                if not hitl_checked and intent_cfg.name in self.config.human_in_the_loop_intents:
+                    hitl_checked = True
+                    approval = interrupt({
+                        "type": "human_in_the_loop",
+                        "intent": intent_cfg.name,
+                        "proposed_tool_calls": [
+                            {"name": pc["name"], "arguments": pc["arguments"]}
+                            for pc in parsed_calls
+                        ],
+                        "user_message": _last_message_text(state.get("messages", [])),
+                    })
+                    if not approval.get("approved", False):
+                        return {
+                            "active_server": intent_cfg.mcp_server,
+                            "response": approval.get("response", "Operation cancelled by user."),
+                            "tool_results": [],
+                        }
 
                 messages.append({
                     "role": "assistant",
@@ -221,8 +241,14 @@ class GatewayOrchestrator:
     async def run(self, user_message: str, thread_id: str) -> str:
         """Run the workflow for one user message.
 
+        If the thread has a pending interrupt (paused by human-in-the-loop),
+        the *second* call to ``run()`` on the same thread treats
+        *user_message* as a JSON payload to resume with.
+
         Args:
-            user_message: User input to route and execute.
+            user_message: User input to route and execute, or a JSON
+                string with ``{"approved": true/false, ...}`` to resume
+                an interrupted thread.
             thread_id: LangGraph checkpoint thread identifier.
 
         Returns:
@@ -231,17 +257,51 @@ class GatewayOrchestrator:
         if self.workflow is None:
             await self.setup()
 
-        initial_state: GatewayState = {
-            "messages": [{"role": "user", "content": user_message}],
-            "intent": "",
-            "active_server": "",
-            "tool_results": [],
-            "response": "",
-            "metadata": {},
-        }
+        assert self.workflow is not None
+        state = await self.workflow.aget_state(
+            {"configurable": {"thread_id": thread_id}}
+        )
+
+        if state.next:
+            try:
+                resume_value = json.loads(user_message)
+            except json.JSONDecodeError:
+                resume_value = {"approved": False, "response": user_message}
+            result = await self.workflow.ainvoke(
+                Command(resume=resume_value),
+                config={"configurable": {"thread_id": thread_id}},
+            )
+        else:
+            initial_state: GatewayState = {
+                "messages": [{"role": "user", "content": user_message}],
+                "intent": "",
+                "active_server": "",
+                "tool_results": [],
+                "response": "",
+                "metadata": {},
+            }
+            result = await self.workflow.ainvoke(
+                initial_state,
+                config={"configurable": {"thread_id": thread_id}},
+            )
+
+        return str(result.get("response", ""))
+
+    async def resume(self, thread_id: str, approval: dict[str, object]) -> str:
+        """Resume an interrupted workflow thread.
+
+        Args:
+            thread_id: The thread to resume.
+            approval: Resume payload, expected to contain
+                ``{"approved": True}`` to allow or
+                ``{"approved": False, "response": "..."}`` to reject.
+
+        Returns:
+            Final response text after the graph completes.
+        """
         assert self.workflow is not None
         result = await self.workflow.ainvoke(
-            initial_state,
+            Command(resume=approval),
             config={"configurable": {"thread_id": thread_id}},
         )
         return str(result.get("response", ""))
