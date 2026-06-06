@@ -2,8 +2,9 @@
 """Starlette HTTP server that drives a GatewayOrchestrator.
 
 Exposes a minimal OpenAI-compatible surface:
-- GET  /health                       → liveness probe
-- POST /v1/chat/completions          → run one turn of the workflow
+- GET  /health                               → liveness probe
+- POST /v1/chat/completions                  → run one turn of the workflow
+- POST /v1/threads/{thread_id}/resume        → resume a paused HITL thread
 
 The shape of the chat-completions response is intentionally small and
 incomplete relative to OpenAI's spec; only the fields real callers use
@@ -14,6 +15,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from pydantic import BaseModel, Field
 from starlette.applications import Starlette
@@ -54,6 +56,29 @@ class ChatCompletionResponse(BaseModel):
     id: str
     object: str = "chat.completion"
     choices: list[ChatChoice]
+
+
+class ResumeRequest(BaseModel):
+    """Request body for POST /v1/threads/{thread_id}/resume.
+
+    The body is forwarded to LangGraph's ``Command(resume=...)``.  For
+    human-in-the-loop gates, the agent node checks
+    ``approval["approved"]`` and, when ``False``, reads
+    ``approval.get("response", "Operation cancelled by user.")``.
+    Extra fields are ignored.
+    """
+
+    approved: bool = True
+    response: str | None = None
+
+
+class ResumeResponse(BaseModel):
+    """Response body for POST /v1/threads/{thread_id}/resume."""
+
+    id: str
+    object: str = "thread.resume"
+    thread_id: str
+    response: str
 
 
 def _last_user_message(messages: list[ChatMessage]) -> str:
@@ -99,6 +124,45 @@ async def chat_completions(request: Request) -> JSONResponse:
     )
 
 
+async def resume_thread(request: Request) -> JSONResponse:
+    """Resume a paused workflow thread.
+
+    The body is forwarded to ``GatewayOrchestrator.resume``, which feeds
+    it to ``Command(resume=...)``.  For HITL pauses the agent node
+    expects ``{"approved": True}`` (continue) or
+    ``{"approved": False, "response": "..."}`` (cancel).
+    """
+    orchestrator: GatewayOrchestrator = request.app.state.orchestrator
+    thread_id = request.path_params["thread_id"]
+
+    raw_body = await request.json()
+    if not isinstance(raw_body, dict):
+        return JSONResponse(
+            {
+                "error": {
+                    "message": "Request body must be a JSON object.",
+                    "type": "invalid_request",
+                }
+            },
+            status_code=400,
+        )
+
+    payload = ResumeRequest.model_validate(raw_body)
+    action: dict[str, Any] = {"approved": payload.approved}
+    if payload.response is not None:
+        action["response"] = payload.response
+
+    response_text = await orchestrator.resume(thread_id, action)
+
+    return JSONResponse(
+        ResumeResponse(
+            id=f"resume-{thread_id}",
+            thread_id=thread_id,
+            response=response_text,
+        ).model_dump()
+    )
+
+
 def create_app(config_path: str) -> Starlette:
     """Build the Starlette app bound to a workflow config.
 
@@ -106,9 +170,9 @@ def create_app(config_path: str) -> Starlette:
         config_path: Path to a workflow.yaml file.
 
     Returns:
-        A Starlette app with ``/health`` and ``/v1/chat/completions``
-        routes, plus startup/shutdown hooks that initialise and tear
-        down the orchestrator.
+        A Starlette app with ``/health``, ``/v1/chat/completions``, and
+        ``/v1/threads/{thread_id}/resume`` routes, plus startup/shutdown
+        hooks that initialise and tear down the orchestrator.
     """
     config = load_config(config_path)
     orchestrator = GatewayOrchestrator(config)
@@ -126,6 +190,11 @@ def create_app(config_path: str) -> Starlette:
         routes=[
             Route("/health", endpoint=health, methods=["GET"]),
             Route("/v1/chat/completions", endpoint=chat_completions, methods=["POST"]),
+            Route(
+                "/v1/threads/{thread_id}/resume",
+                endpoint=resume_thread,
+                methods=["POST"],
+            ),
         ],
         lifespan=lifespan,
     )
