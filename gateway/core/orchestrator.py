@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -22,7 +22,14 @@ from gateway.observability.tracer import setup_tracing
 # SqliteSaver is only available when the 'sqlite' extra is installed; it
 # is referenced dynamically in ``_build_checkpointer`` so importing the
 # type at module load time is intentionally avoided.
-SqliteSaverHolder = Any
+if TYPE_CHECKING:
+    from langgraph.checkpoint.sqlite import SqliteSaver  # type: ignore[import-not-found]
+
+    # Type alias used in ``self.checkpointer`` annotation below.  Declared
+    # via the ``type`` statement so mypy treats it as a real alias.
+    type SqliteSaverHolder = SqliteSaver
+else:
+    type SqliteSaverHolder = Any  # type: ignore[valid-type]
 
 
 class GatewayOrchestrator:
