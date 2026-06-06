@@ -55,6 +55,9 @@ class GatewayOrchestrator:
                     url=server.url,
                     command=server.command,
                     args=server.args,
+                    timeout=server.timeout,
+                    max_retries=server.max_retries,
+                    backoff_base=server.backoff_base,
                 ),
             )
         await self.mcp_manager.connect_all()

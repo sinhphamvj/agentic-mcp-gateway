@@ -267,3 +267,363 @@ async def test_connection_manager_reports_configuration_errors() -> None:
     missing_command.register("local", ServerConfig(name="local", transport="stdio"))
     with pytest.raises(ValueError, match="requires a command"):
         await missing_command.connect_all()
+
+
+# ---------------------------------------------------------------------------
+# Connection resilience tests (F10)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_with_retry_succeeds_on_first_attempt() -> None:
+    """with_retry returns immediately when the first attempt succeeds."""
+    from gateway.mcp_client.manager import with_retry
+
+    calls: list[int] = []
+
+    async def succeed() -> str:
+        calls.append(1)
+        return "ok"
+
+    result = await with_retry(succeed, max_retries=3, backoff_base=0.0)
+    assert result == "ok"
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_with_retry_succeeds_on_third_attempt() -> None:
+    """with_retry keeps trying until the call eventually succeeds."""
+    from gateway.mcp_client.manager import with_retry
+
+    attempts: list[int] = []
+
+    async def flaky() -> str:
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise ConnectionError("transient")
+        return "ok"
+
+    result = await with_retry(flaky, max_retries=5, backoff_base=0.0)
+    assert result == "ok"
+    assert len(attempts) == 3
+
+
+@pytest.mark.asyncio
+async def test_with_retry_exhausts_max_retries_and_raises_last_exception() -> None:
+    """with_retry re-raises the last exception after exhausting attempts."""
+    from gateway.mcp_client.manager import with_retry
+
+    attempts: list[int] = []
+
+    async def always_fails() -> str:
+        attempts.append(1)
+        raise ConnectionError(f"attempt {len(attempts)}")
+
+    with pytest.raises(ConnectionError, match="attempt 3"):
+        await with_retry(always_fails, max_retries=2, backoff_base=0.0)
+    assert len(attempts) == 3  # 1 initial + 2 retries
+
+
+@pytest.mark.asyncio
+async def test_with_retry_zero_max_retries_means_no_retry() -> None:
+    """with_retry with max_retries=0 raises immediately on failure."""
+    from gateway.mcp_client.manager import with_retry
+
+    attempts: list[int] = []
+
+    async def always_fails() -> str:
+        attempts.append(1)
+        raise ConnectionError("nope")
+
+    with pytest.raises(ConnectionError):
+        await with_retry(always_fails, max_retries=0, backoff_base=0.0)
+    assert len(attempts) == 1
+
+
+@pytest.mark.asyncio
+async def test_with_retry_does_not_retry_non_retryable_exceptions() -> None:
+    """with_retry re-raises non-retryable exceptions immediately."""
+    from gateway.mcp_client.manager import with_retry
+
+    attempts: list[int] = []
+
+    async def boom() -> str:
+        attempts.append(1)
+        raise ValueError("bad input")
+
+    with pytest.raises(ValueError, match="bad input"):
+        await with_retry(boom, max_retries=5, backoff_base=0.0)
+    assert len(attempts) == 1
+
+
+@pytest.mark.asyncio
+async def test_call_tool_retries_on_connection_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """call_tool retries when the underlying client raises ConnectionError."""
+    import gateway.mcp_client.manager as manager_module
+
+    class FlakyClient:
+        def __init__(self, server_id: str, args: list[str] | None = None) -> None:
+            self.server_id = server_id
+            self.args = args or []
+            self.connect_calls = 0
+            self.tool_calls = 0
+
+        async def connect(self) -> None:
+            self.connect_calls += 1
+
+        async def list_tools(self) -> list[str]:
+            return []
+
+        async def call_tool(self, tool_name: str, arguments: dict[str, object]) -> str:
+            self.tool_calls += 1
+            if self.tool_calls < 3:
+                raise ConnectionError("dropped")
+            return f"{tool_name}:{arguments}"
+
+        async def cleanup(self) -> None:
+            pass
+
+    monkeypatch.setattr(manager_module, "MCPHttpClient", FlakyClient)
+    monkeypatch.setattr(manager_module, "MCPStdioClient", FlakyClient)
+
+    manager = MCPConnectionManager()
+    manager.register(
+        "flaky",
+        ServerConfig(
+            name="flaky",
+            transport="http",
+            url="http://localhost:8000/mcp",
+            max_retries=5,
+            backoff_base=0.0,
+        ),
+    )
+    await manager.connect_all(max_retries=0)
+
+    result = await manager.call_tool("flaky", "add", {"a": 1})
+    assert result == "add:{'a': 1}"
+    assert manager._clients["flaky"].tool_calls == 3  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_call_tool_returns_structured_error_after_retry_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """call_tool returns a JSON error dict when retries are exhausted."""
+    import json
+
+    import gateway.mcp_client.manager as manager_module
+
+    class AlwaysFailsClient:
+        def __init__(self, server_id: str, args: list[str] | None = None) -> None:
+            self.server_id = server_id
+            self.args = args or []
+
+        async def connect(self) -> None:
+            pass
+
+        async def list_tools(self) -> list[str]:
+            return []
+
+        async def call_tool(self, tool_name: str, arguments: dict[str, object]) -> str:
+            raise ConnectionError("server down")
+
+        async def cleanup(self) -> None:
+            pass
+
+    monkeypatch.setattr(manager_module, "MCPHttpClient", AlwaysFailsClient)
+    monkeypatch.setattr(manager_module, "MCPStdioClient", AlwaysFailsClient)
+
+    manager = MCPConnectionManager()
+    manager.register(
+        "broken",
+        ServerConfig(
+            name="broken",
+            transport="http",
+            url="http://localhost:8000/mcp",
+            max_retries=2,
+            backoff_base=0.0,
+        ),
+    )
+    await manager.connect_all(max_retries=0)
+
+    result = await manager.call_tool("broken", "add", {"a": 1})
+    payload = json.loads(result)
+    assert payload["server"] == "broken"
+    assert payload["tool"] == "add"
+    assert "server down" in payload["error"]
+    assert "3 attempts" in payload["error"]  # 1 + 2 retries
+
+
+@pytest.mark.asyncio
+async def test_connect_all_retries_each_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    """connect_all retries each server's initial connect on failure."""
+    import gateway.mcp_client.manager as manager_module
+
+    class FlakyConnectClient:
+        instances: list[FlakyConnectClient] = []
+
+        def __init__(self, server_id: str, args: list[str] | None = None) -> None:
+            self.server_id = server_id
+            self.args = args or []
+            self.connect_calls = 0
+            self.instances.append(self)
+
+        async def connect(self) -> None:
+            self.connect_calls += 1
+            if self.connect_calls < 2:
+                raise ConnectionError("first attempt fails")
+
+        async def list_tools(self) -> list[str]:
+            return []
+
+        async def call_tool(self, tool_name: str, arguments: dict[str, object]) -> str:
+            return ""
+
+        async def cleanup(self) -> None:
+            pass
+
+    monkeypatch.setattr(manager_module, "MCPHttpClient", FlakyConnectClient)
+    monkeypatch.setattr(manager_module, "MCPStdioClient", FlakyConnectClient)
+
+    manager = MCPConnectionManager()
+    manager.register(
+        "flaky",
+        ServerConfig(
+            name="flaky",
+            transport="http",
+            url="http://localhost:8000/mcp",
+            backoff_base=0.0,
+        ),
+    )
+
+    await manager.connect_all(max_retries=2)
+
+    assert "flaky" in manager.connected_servers
+    assert FlakyConnectClient.instances[0].connect_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_connect_all_skips_unreachable_servers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """connect_all reports failure but does not raise if any server is unreachable.
+
+    The current implementation aborts the whole batch when one server
+    fails; this test pins the behaviour so future refactors keep the
+    contract explicit.
+    """
+    import gateway.mcp_client.manager as manager_module
+
+    class AlwaysFailsClient:
+        def __init__(self, server_id: str, args: list[str] | None = None) -> None:
+            self.server_id = server_id
+            self.args = args or []
+
+        async def connect(self) -> None:
+            raise ConnectionError("never up")
+
+        async def list_tools(self) -> list[str]:
+            return []
+
+        async def call_tool(self, tool_name: str, arguments: dict[str, object]) -> str:
+            return ""
+
+        async def cleanup(self) -> None:
+            pass
+
+    monkeypatch.setattr(manager_module, "MCPHttpClient", AlwaysFailsClient)
+    monkeypatch.setattr(manager_module, "MCPStdioClient", AlwaysFailsClient)
+
+    manager = MCPConnectionManager()
+    manager.register(
+        "broken",
+        ServerConfig(
+            name="broken",
+            transport="http",
+            url="http://localhost:8000/mcp",
+            backoff_base=0.0,
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="Failed to connect"):
+        await manager.connect_all(max_retries=1)
+
+
+@pytest.mark.asyncio
+async def test_health_check_marks_degraded_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """health_check reports a server as degraded when list_tools() fails."""
+    import gateway.mcp_client.manager as manager_module
+
+    class BrokenListClient:
+        def __init__(self, server_id: str, args: list[str] | None = None) -> None:
+            self.server_id = server_id
+            self.args = args or []
+
+        async def connect(self) -> None:
+            pass
+
+        async def list_tools(self) -> list[str]:
+            raise ConnectionError("dead")
+
+        async def call_tool(self, tool_name: str, arguments: dict[str, object]) -> str:
+            return ""
+
+        async def cleanup(self) -> None:
+            pass
+
+    monkeypatch.setattr(manager_module, "MCPHttpClient", BrokenListClient)
+    monkeypatch.setattr(manager_module, "MCPStdioClient", BrokenListClient)
+
+    manager = MCPConnectionManager()
+    manager.register(
+        "broken",
+        ServerConfig(name="broken", transport="http", url="http://localhost:8000/mcp"),
+    )
+    await manager.connect_all(max_retries=0)
+
+    status = await manager.health_check("broken")
+    assert status["status"] == "degraded"
+    assert status["failed_attempts"] >= 1
+    assert "last_error" in status
+
+
+@pytest.mark.asyncio
+async def test_get_health_reports_all_servers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """get_health returns a status dict for every registered server."""
+    import gateway.mcp_client.manager as manager_module
+
+    class GoodClient:
+        def __init__(self, server_id: str, args: list[str] | None = None) -> None:
+            self.server_id = server_id
+            self.args = args or []
+
+        async def connect(self) -> None:
+            pass
+
+        async def list_tools(self) -> list[str]:
+            return ["tool1"]
+
+        async def call_tool(self, tool_name: str, arguments: dict[str, object]) -> str:
+            return ""
+
+        async def cleanup(self) -> None:
+            pass
+
+    monkeypatch.setattr(manager_module, "MCPHttpClient", GoodClient)
+    monkeypatch.setattr(manager_module, "MCPStdioClient", GoodClient)
+
+    manager = MCPConnectionManager()
+    manager.register(
+        "ok",
+        ServerConfig(name="ok", transport="http", url="http://localhost:8000/mcp"),
+    )
+    await manager.connect_all(max_retries=0)
+
+    health = manager.get_health()
+    assert health["ok"]["status"] == "connected"
+    # A server that's registered but not yet connected is still surfaced.
+    manager.register(
+        "not_yet_connected",
+        ServerConfig(name="not_yet_connected", transport="http", url="http://localhost:8001/mcp"),
+    )
+    health = manager.get_health()
+    assert "not_yet_connected" in health
+    assert health["not_yet_connected"]["status"] == "disconnected"

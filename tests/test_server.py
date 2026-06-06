@@ -58,11 +58,26 @@ def test_create_app_returns_starlette() -> None:
 
 
 def test_health_endpoint(mock_orchestrator: GatewayOrchestrator) -> None:
-    """GET /health should return 200 with status=ok."""
+    """GET /health should return 200 with status=ok and per-MCP-server status."""
+    mock_orchestrator.mcp_manager.get_health.return_value = {  # type: ignore[attr-defined]
+        "db": {
+            "status": "connected",
+            "failed_attempts": 0,
+            "last_success": "2026-06-06T00:00:00+00:00",
+        },
+        "files": {
+            "status": "degraded",
+            "failed_attempts": 2,
+            "last_error": "timeout",
+        },
+    }
     client, _app = _build_app_with_mock(mock_orchestrator)
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    body = response.json()
+    assert body["status"] == "degraded"
+    assert body["mcp_servers"]["db"]["status"] == "connected"
+    assert body["mcp_servers"]["files"]["status"] == "degraded"
 
 
 def test_chat_completions_calls_orchestrator(mock_orchestrator: GatewayOrchestrator) -> None:

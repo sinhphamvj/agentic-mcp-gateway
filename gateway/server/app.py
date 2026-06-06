@@ -90,9 +90,16 @@ def _last_user_message(messages: list[ChatMessage]) -> str:
     return ""
 
 
-async def health(_request: Request) -> JSONResponse:
-    """Liveness probe."""
-    return JSONResponse({"status": "ok"})
+async def health(request: Request) -> JSONResponse:
+    """Liveness probe with per-MCP-server status."""
+    orchestrator: GatewayOrchestrator = request.app.state.orchestrator
+    mcp_status = orchestrator.mcp_manager.get_health()
+    overall = (
+        "ok"
+        if all(info.get("status") == "connected" for info in mcp_status.values())
+        else "degraded"
+    )
+    return JSONResponse({"status": overall, "mcp_servers": mcp_status})
 
 
 async def _stream_response(

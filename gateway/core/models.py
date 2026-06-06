@@ -38,6 +38,9 @@ class MCPServerConfig(BaseModel):
     command: str | None = None
     args: list[str] = Field(default_factory=list)
     description: str = ""
+    timeout: int = 30
+    max_retries: int = 2
+    backoff_base: float = 1.0
 
 
 class IntentConfig(BaseModel):
