@@ -57,6 +57,7 @@ class WorkflowConfig(BaseModel):
     gateway_port: int = 8001
     enable_tracing: bool = True
     human_in_the_loop_intents: list[str] = Field(default_factory=list)
+    max_tool_rounds: int = 3
 
 
 class ToolSchema(BaseModel):

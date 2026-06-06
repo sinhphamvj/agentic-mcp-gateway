@@ -72,7 +72,9 @@ async def test_orchestrator_runs_full_workflow_with_tool_call(
 
     response = await orchestrator.run("lookup customer 42", thread_id="thread-1")
 
-    assert response == "lookup_customer: Customer Alice"
+    # F2: the response is now synthesised by the second LLM call,
+    # not the old raw-string-join of tool_results.
+    assert response == "Found Customer Alice with ID 42"
     assert fake_llm.structured_calls[0]["response_model"].__name__ == "IntentClassification"
     assert fake_llm.chat_calls[0]["tools"] == [
         {
@@ -91,6 +93,12 @@ async def test_orchestrator_runs_full_workflow_with_tool_call(
     assert fake_manager.tool_calls == [
         ("db", "lookup_customer", {"customer_id": "42"}),
     ]
+    # Verify the second LLM call received the tool result
+    assert len(fake_llm.chat_calls) >= 2
+    second_call_messages = fake_llm.chat_calls[1]["messages"]
+    assert any(m.get("role") == "tool" for m in second_call_messages), (  # type: ignore[attr-defined]
+        "Second LLM call should include tool-role messages"
+    )
 
 
 @pytest.mark.asyncio
@@ -120,9 +128,9 @@ async def test_agent_node_returns_model_text_when_no_tool_call(
         }
     )
 
-    assert update["tool_results"] == [
-        {"server": "db", "tool": "", "result": "No tool needed.", "arguments": {}}
-    ]
+    # F2: when no tool call, the agent returns the LLM response directly
+    assert update["response"] == "Found Customer Alice with ID 42"
+    assert update["tool_results"] == []
     assert fake_manager.tool_calls == []
 
 
@@ -263,12 +271,42 @@ class FakeWorkflowLLM:
         messages: list[dict[str, object]],
         tools: list[dict[str, object]] | None = None,
     ) -> object:
-        """Return a fake chat response with optional tool calls."""
+        """Return a fake chat response.
+
+        First call (no ``tool``-role message in input) → return ``tool_calls``.
+        Subsequent calls (tool feedback present) → return synthesised text.
+        """
         self.chat_calls.append({"messages": messages, "tools": tools})
+
+        has_tool_role = any(m.get("role") == "tool" for m in messages)
+
+        if self.tool_calls and not has_tool_role:
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=None,
+                            tool_calls=[
+                                SimpleNamespace(
+                                    id="call_0_lookup_customer",
+                                    function=SimpleNamespace(
+                                        name="lookup_customer",
+                                        arguments='{"customer_id": "42"}',
+                                    ),
+                                )
+                            ],
+                        )
+                    )
+                ]
+            )
+
         return SimpleNamespace(
             choices=[
                 SimpleNamespace(
-                    message=SimpleNamespace(content="No tool needed.", tool_calls=self.tool_calls)
+                    message=SimpleNamespace(
+                        content="Found Customer Alice with ID 42",
+                        tool_calls=None,
+                    )
                 )
             ]
         )

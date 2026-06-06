@@ -78,7 +78,15 @@ class GatewayOrchestrator:
         self.workflow = graph.compile(checkpointer=self.checkpointer)
 
     def _create_agent_node(self, intent_cfg: IntentConfig) -> Any:
-        """Create a LangGraph node that calls the LLM and optional MCP tools."""
+        """Create a LangGraph node that calls the LLM and optional MCP tools.
+
+        Unlike the original single-call design, the node now runs up to
+        ``max_tool_rounds`` LLM–tool cycles.  When the LLM requests a tool
+        the node executes it, feeds the result back as a ``tool``-role
+        message (OpenAI protocol), and lets the LLM produce a natural-language
+        answer on the next turn.  The downstream ``_compile_response`` node
+        passes the synthesised text through unchanged.
+        """
 
         async def agent_node(state: GatewayState) -> dict[str, object]:
             tools_by_server = await self.mcp_manager.list_all_tools()
@@ -86,45 +94,60 @@ class GatewayOrchestrator:
             openai_tools = [_tool_to_openai(tool) for tool in server_tools]
             messages = _state_messages_to_openai(state.get("messages", []))
             if intent_cfg.system_prompt:
-                messages = [
-                    {"role": "system", "content": intent_cfg.system_prompt},
-                    *messages,
-                ]
+                messages.insert(0, {"role": "system", "content": intent_cfg.system_prompt})
 
-            response = await self.llm_client.chat(messages, tools=openai_tools)
-            message = _first_response_message(response)
-            tool_calls = _message_tool_calls(message)
-            tool_results: list[dict[str, object]] = []
+            max_rounds = self.config.max_tool_rounds
 
-            if tool_calls:
-                for tool_call in tool_calls:
-                    tool_name, arguments = _parse_tool_call(tool_call)
+            for _round in range(max_rounds):
+                response = await self.llm_client.chat(messages, tools=openai_tools)
+                message = _first_response_message(response)
+                tool_calls = _message_tool_calls(message)
+
+                if not tool_calls:
+                    return {
+                        "active_server": intent_cfg.mcp_server,
+                        "response": _message_content(message),
+                        "tool_results": [],
+                    }
+
+                parsed_calls: list[dict[str, object]] = []
+                for tc in tool_calls:
+                    name, args = _parse_tool_call(tc)
+                    tc_id = getattr(tc, "id", f"call_{_round}_{name}")
+                    parsed_calls.append({"id": tc_id, "name": name, "arguments": args, "raw": tc})
+
+                messages.append({
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": pc["id"],
+                            "type": "function",
+                            "function": {
+                                "name": pc["name"],
+                                "arguments": json.dumps(pc["arguments"]),  # type: ignore[arg-type]
+                            },
+                        }
+                        for pc in parsed_calls
+                    ],
+                })
+
+                for pc in parsed_calls:
                     result = await self.mcp_manager.call_tool(
                         intent_cfg.mcp_server,
-                        tool_name,
-                        arguments,
+                        str(pc["name"]),
+                        dict(pc["arguments"]),
                     )
-                    tool_results.append(
-                        {
-                            "server": intent_cfg.mcp_server,
-                            "tool": tool_name,
-                            "arguments": arguments,
-                            "result": result,
-                        }
-                    )
-            else:
-                tool_results.append(
-                    {
-                        "server": intent_cfg.mcp_server,
-                        "tool": "",
-                        "arguments": {},
-                        "result": _message_content(message),
-                    }
-                )
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": str(pc["id"]),
+                        "content": json.dumps(result) if isinstance(result, dict) else str(result),
+                    })
 
             return {
                 "active_server": intent_cfg.mcp_server,
-                "tool_results": tool_results,
+                "response": "Max tool rounds reached.",
+                "tool_results": [],
             }
 
         return agent_node
@@ -141,10 +164,18 @@ class GatewayOrchestrator:
         return {"response": str(human_response)}
 
     async def _compile_response(self, state: GatewayState) -> dict[str, str]:
-        """Format tool results into readable response text."""
+        """Format the final response.
+
+        If the agent node already produced a synthesised response (F2) it
+        is passed through unchanged.  Otherwise the original string-join of
+        ``tool_results`` is used as a fallback.
+        """
+        existing = state.get("response")
+        if existing:
+            return {"response": existing}
         tool_results = state.get("tool_results", [])
         if not tool_results:
-            return {"response": state.get("response") or "No results."}
+            return {"response": "No results."}
 
         lines: list[str] = []
         for result in tool_results:
